@@ -7,12 +7,35 @@ This is for turning individual mocks into the real integration.
 
 1. Create a Postgres database (Neon: neon.tech; Supabase: supabase.com — enable the
    `pgvector` extension there for future semantic transcript search).
-2. Set `DATABASE_URL` in `.env`.
+2. Set `DATABASE_URL` in `.env.local`.
 3. `npm run db:generate` (only if you've changed `src/lib/db/schema.ts`) then
    `npm run db:migrate && npm run db:seed`.
 
 The same `src/lib/db/schema.ts` and every query in `src/lib/db/queries.ts` work unchanged
 against either driver — only `src/lib/db/index.ts` branches on `DATABASE_URL`.
+
+### Using a real Postgres database (Neon)
+
+Setting `DATABASE_URL` in `.env.local` switches the app from the local embedded PGlite file
+(`./.data/local-db`) to whatever real Postgres database that URL points at — nothing else to
+configure. The first time you switch, run `npm run db:migrate && npm run db:seed` once
+against the new database (its schema starts out empty; PGlite's local data doesn't carry
+over).
+
+**Pooled vs. direct connection string.** Neon gives you two connection strings per branch:
+a pooled one (hostname contains `-pooler`, routed through PgBouncer in transaction mode) and
+a direct/unpooled one. Neon's own docs recommend the pooled string for normal app traffic but
+warn that running migrations through it can fail, since transaction-mode pooling doesn't
+reliably support the session-level behavior migration tools rely on. So:
+
+- `DATABASE_URL` → the **pooled** connection string (what the app uses at runtime).
+- `DIRECT_DATABASE_URL` → optional, the **direct/unpooled** connection string. Set this too
+  if `DATABASE_URL` is pooled — `npm run db:migrate` and `drizzle-kit` (`npm run db:generate`)
+  both prefer it when present, so migrations run against the direct connection while the app
+  keeps using the pooled one. If you only ever set `DATABASE_URL` to Neon's direct string,
+  you don't need `DIRECT_DATABASE_URL` at all — but then the app runtime loses pooling.
+
+See `.env.example` for both variables.
 
 ## Auth (Clerk)
 
