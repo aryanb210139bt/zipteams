@@ -1,0 +1,43 @@
+name: LeadSquared Discovery (one-time)
+
+# Runs ONLY when you click the button (no schedule, no auto-trigger) --
+# this is deliberately manual since it's a one-time discovery step, not
+# the real ongoing sync (that comes later, once these values are confirmed).
+on:
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm real network access (sanity check)
+        run: |
+          echo "Testing connectivity to LeadSquared..."
+          curl -s -o /dev/null -w "HTTP status: %{http_code}\n" "https://${{ secrets.LEADSQUARED_HOST }}/v2/ActivityTypes.Get?accessKey=x&secretKey=x" || echo "Connection failed"
+
+      - name: (a) Find Phone Call ActivityEvent code
+        run: |
+          curl -s "https://${{ secrets.LEADSQUARED_HOST }}/v2/ProspectActivity.svc/ActivityTypes.Get?accessKey=${{ secrets.LEADSQUARED_ACCESS_KEY }}&secretKey=${{ secrets.LEADSQUARED_SECRET_KEY }}" \
+            -o activitytypes.json
+          echo "---- Activity types containing 'call' (case-insensitive) ----"
+          cat activitytypes.json | grep -i -B2 -A5 "call" || echo "No matches -- see full dump below"
+          echo ""
+          echo "---- Full response (first 3000 chars, in case grep found nothing) ----"
+          head -c 3000 activitytypes.json
+
+      - name: (b) Find Sales Group and Lead Stage schema names
+        run: |
+          curl -s "https://${{ secrets.LEADSQUARED_HOST }}/v2/LeadManagement.svc/LeadsMetaData.Get?accessKey=${{ secrets.LEADSQUARED_ACCESS_KEY }}&secretKey=${{ secrets.LEADSQUARED_SECRET_KEY }}" \
+            -o leadsmetadata.json
+          echo "---- Fields matching 'Sales Group' or 'Lead Stage' ----"
+          cat leadsmetadata.json | grep -i -B2 -A2 -E '"DisplayName":\s*"(Sales Group|Lead Stage)"' || echo "No exact matches -- see broader dump below"
+          echo ""
+          echo "---- All fields containing 'group' or 'stage' (broader net) ----"
+          cat leadsmetadata.json | grep -i -B1 -A1 -E "group|stage"
+
+      - name: Reminder
+        run: |
+          echo "Copy the output above (ActivityEvent code number, and the"
+          echo "two SchemaName values) and paste it back to Claude -- this"
+          echo "output is safe to share, it contains no secrets, just field"
+          echo "names and codes."
