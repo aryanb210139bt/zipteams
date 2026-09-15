@@ -1,8 +1,5 @@
 name: LeadSquared Discovery (one-time)
 
-# Runs ONLY when you click the button (no schedule, no auto-trigger) --
-# this is deliberately manual since it's a one-time discovery step, not
-# the real ongoing sync (that comes later, once these values are confirmed).
 on:
   workflow_dispatch:
 
@@ -20,20 +17,30 @@ jobs:
           curl -s "https://${{ secrets.LEADSQUARED_HOST }}/v2/ProspectActivity.svc/ActivityTypes.Get?accessKey=${{ secrets.LEADSQUARED_ACCESS_KEY }}&secretKey=${{ secrets.LEADSQUARED_SECRET_KEY }}" \
             -o activitytypes.json
           echo "---- Activity types containing 'call' (case-insensitive) ----"
-          cat activitytypes.json | grep -i -B2 -A5 "call" || echo "No matches -- see full dump below"
+          (grep -i -B2 -A5 "call" activitytypes.json) || echo "(no lines matched 'call' -- see full dump below)"
           echo ""
-          echo "---- Full response (first 3000 chars, in case grep found nothing) ----"
-          head -c 3000 activitytypes.json
+          echo "---- Full response (first 4000 chars, in case grep found nothing) ----"
+          head -c 4000 activitytypes.json
+          echo ""
+          echo "(step always succeeds past this point -- see output above)"
 
       - name: (b) Find Sales Group and Lead Stage schema names
         run: |
           curl -s "https://${{ secrets.LEADSQUARED_HOST }}/v2/LeadManagement.svc/LeadsMetaData.Get?accessKey=${{ secrets.LEADSQUARED_ACCESS_KEY }}&secretKey=${{ secrets.LEADSQUARED_SECRET_KEY }}" \
             -o leadsmetadata.json
-          echo "---- Fields matching 'Sales Group' or 'Lead Stage' ----"
-          cat leadsmetadata.json | grep -i -B2 -A2 -E '"DisplayName":\s*"(Sales Group|Lead Stage)"' || echo "No exact matches -- see broader dump below"
+          echo "---- Fields matching DisplayName 'Sales Group' or 'Lead Stage' exactly ----"
+          (grep -i -B2 -A2 -E '"DisplayName":\s*"(Sales Group|Lead Stage)"' leadsmetadata.json) || echo "(no exact matches -- see broader dump below)"
           echo ""
-          echo "---- All fields containing 'group' or 'stage' (broader net) ----"
-          cat leadsmetadata.json | grep -i -B1 -A1 -E "group|stage"
+          echo "---- All fields containing 'group' or 'stage' anywhere (broader net) ----"
+          (grep -i -B1 -A1 -E "group|stage" leadsmetadata.json) || echo "(no matches for 'group'/'stage' either -- see full field dump below)"
+          echo ""
+          echo "---- ALL DisplayName values in this account (full list, unconditional) ----"
+          grep -o '"DisplayName":"[^"]*"' leadsmetadata.json || grep -o '"DisplayName": "[^"]*"' leadsmetadata.json || echo "(couldn't extract DisplayName with this pattern -- see raw dump below)"
+          echo ""
+          echo "---- Raw response (first 6000 chars, as a fallback) ----"
+          head -c 6000 leadsmetadata.json
+          echo ""
+          echo "(step always succeeds past this point -- see output above)"
 
       - name: Reminder
         run: |
