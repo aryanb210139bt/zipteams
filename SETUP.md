@@ -69,12 +69,28 @@ whenever you change either, since every score/verdict row records it.
 
 ## Audio storage
 
-Not wired up yet (`lib/integrations/storage.ts` is a stub). The upload flow currently
-accepts an already-hosted `audioUrl` directly. To add real upload: point
-`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (or any S3-compatible bucket) at
-`lib/integrations/storage.ts`, generate a signed upload URL from
-`src/app/api/upload/single/route.ts`, and store only the resulting signed URL on
-`conversations.audioUrl` — never the raw file in Postgres.
+Set `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`STORAGE_BUCKET` and `lib/integrations/storage.ts`
+re-hosts CRM-sourced recordings (see below) into that bucket before transcription, normalizing
+to mono/16kHz mp3 via `ffmpeg` first (falls back to uploading unnormalized audio with a warning
+if `ffmpeg` isn't on PATH — **deployment decision needed**: this repo has no Dockerfile, so
+whoever deploys to Render needs to add `ffmpeg` as a build-time apt package). Manual/CSV upload
+still accepts an already-hosted `audioUrl` directly and is never re-hosted. Only the resulting
+signed URL is ever persisted on `conversations.audioUrl` — never the raw file in Postgres.
+
+Cleanup of re-hosted recordings (`lib/inngest/functions/storage-cleanup.ts`) is **off by
+default** — set `CLEANUP_REHOSTED_RECORDINGS=true` once it's decided whether Kalvium needs
+long-term audio retention for compliance/QA review (open question, PRD § 9.1).
+
+## Speech-to-text (Sarvam Batch STT)
+
+Set `SARVAM_API_KEY`. `lib/integrations/sarvam.ts` submits the recording to Sarvam's async
+Batch STT job (submit → upload → start → poll → download), orchestrated as durable Inngest
+steps in `lib/pipeline/sarvam-transcribe.ts` so an in-flight job survives a restart instead of
+being resubmitted. Calls sourced from the LeadSquared sync (`source = 'crm_recordings'`) route
+here; everything else keeps using Deepgram — see `lib/pipeline/provider-selection.ts`. The
+exact Sarvam request/response shapes were reconstructed from public docs (this environment's
+egress proxy blocks `docs.sarvam.ai` directly) — verify against a live account before relying
+on this in production.
 
 ## Background jobs (Inngest)
 
@@ -87,9 +103,17 @@ README).
 
 Configure per-org from Setup → Leadsquared (writes to `organizations.leadsquaredConfig`),
 or set `LEADSQUARED_ACCESS_KEY`/`LEADSQUARED_SECRET_KEY`/`LEADSQUARED_HOST` as an
-environment-level fallback. Requires `leads.crmRecordUrl` to be populated with the
-Leadsquared prospect id (not currently written anywhere — add that when you build the
-Leadsquared → CallIQ lead sync direction).
+environment-level fallback. `leads.crmRecordUrl` holds the Leadsquared ProspectId in both
+directions — outbound (`pushCallScoreToLeadsquared`) and now inbound too.
+
+**Inbound sync** (`lib/inngest/functions/leadsquared-sync.ts`, cron every 15 min): discovers
+new Phone Call activities per org with `leadsquaredConfig.enabled`, creates a lead (matched
+on `crmRecordUrl`) and a `conversations` row per call, then immediately triggers the
+download+transcribe pipeline. This additionally needs `LEADSQUARED_PHONE_CALL_ACTIVITY_EVENT`
+(and optionally `LEADSQUARED_RECORDING_URL_FIELD`/`LEADSQUARED_LEAD_NAME_FIELD`), which are
+outputs of `.github/workflows/leadsquared-discovery.yml` — **run that workflow once against
+the real account first**; until the ActivityEvent env var is set, the sync cron no-ops with
+a warning for every org, same "unset key → safe no-op" convention as every other integration.
 
 ## Email (Resend)
 

@@ -7,11 +7,16 @@ import { translateTranscript } from "@/lib/integrations/translate";
 import { scoreCall, PROMPT_VERSION } from "@/lib/integrations/claude";
 import { pushCallScoreToLeadsquared } from "@/lib/integrations/leadsquared";
 import { sendFlaggedCallAlert } from "@/lib/integrations/resend";
-import { env } from "@/lib/env";
+import { rehostRecording } from "@/lib/integrations/storage";
+import { transcribeViaSarvamSteps } from "@/lib/pipeline/sarvam-transcribe";
+import { getSttProvider } from "@/lib/pipeline/provider-selection";
+import { env, hasSupabaseStorage } from "@/lib/env";
 
 /** Minimal shape both Inngest's real `step` and the inline fallback runner satisfy. */
 export type StepRunner = {
   run<T>(name: string, fn: () => Promise<T>): Promise<T>;
+  /** Durable wait — Inngest's step.sleep persists across restarts; the inline fallback just awaits a real timer. Used by the Sarvam poll loop (R3). */
+  sleep(name: string, duration: string | number): Promise<void>;
 };
 
 export class PipelineNonRetriableError extends Error {}
@@ -45,25 +50,47 @@ export async function executeCallPipeline(callId: string, step: StepRunner) {
     return { callId, status: "already-scored" as const, skipped: true };
   }
 
-  // Step 1: transcribe (skip if a transcript already exists — e.g. arrived pre-filled via CSV bulk upload).
-  const transcriptRaw = await step.run("transcribe", async () => {
+  // Step 0: re-host CRM-sourced audio into our own storage before anything else
+  // depends on a URL that may be short-lived (R2) — no-ops for manual/CSV
+  // uploads (source !== "crm_recordings") and if already re-hosted or storage
+  // isn't configured, so the existing upload flow is unaffected.
+  const audioUrl = await step.run("rehost-audio", async () => {
     const fresh = await db.query.conversations.findFirst({ where: eq(t.conversations.id, callId) });
-    if (fresh?.transcriptRaw?.length) return fresh.transcriptRaw;
+    if (!fresh?.audioUrl || fresh.source !== "crm_recordings" || !hasSupabaseStorage) return fresh?.audioUrl ?? null;
+    if (fresh.audioUrl.startsWith(`${env.supabaseUrl}/storage/v1/`)) return fresh.audioUrl; // already re-hosted
 
-    await db.update(t.conversations).set({ status: "transcribing" }).where(eq(t.conversations.id, callId));
-    const raw = await transcribeAudio({
-      audioUrl: loaded.convo.audioUrl,
-      leadName: loaded.lead.name,
-      associateName: loaded.associate?.name ?? "the associate",
-      glossaryTerms: loaded.glossary.map((g) => ({ term: g.term, commonMistranscriptions: g.commonMistranscriptions ?? [] })),
-    });
-    const corrected = applyGlossaryCorrections(
-      raw,
-      loaded.glossary.map((g) => ({ term: g.term, commonMistranscriptions: g.commonMistranscriptions ?? [] }))
-    );
-    await db.update(t.conversations).set({ transcriptRaw: corrected }).where(eq(t.conversations.id, callId));
-    return corrected;
+    const { url } = await rehostRecording({ orgId: fresh.orgId, conversationId: callId, sourceUrl: fresh.audioUrl });
+    await db.update(t.conversations).set({ audioUrl: url }).where(eq(t.conversations.id, callId));
+    return url;
   });
+
+  const glossaryTerms = loaded.glossary.map((g) => ({ term: g.term, commonMistranscriptions: g.commonMistranscriptions ?? [] }));
+  const sttProvider = getSttProvider(loaded.convo.source);
+
+  // Step 1: transcribe (skip if a transcript already exists — e.g. arrived pre-filled via CSV bulk upload).
+  const transcriptRaw =
+    sttProvider === "sarvam"
+      ? await transcribeViaSarvamSteps(callId, step, {
+          audioUrl,
+          leadName: loaded.lead.name,
+          associateName: loaded.associate?.name ?? "the associate",
+          glossaryTerms,
+        })
+      : await step.run("transcribe", async () => {
+          const fresh = await db.query.conversations.findFirst({ where: eq(t.conversations.id, callId) });
+          if (fresh?.transcriptRaw?.length) return fresh.transcriptRaw;
+
+          await db.update(t.conversations).set({ status: "transcribing" }).where(eq(t.conversations.id, callId));
+          const raw = await transcribeAudio({
+            audioUrl,
+            leadName: loaded.lead.name,
+            associateName: loaded.associate?.name ?? "the associate",
+            glossaryTerms,
+          });
+          const corrected = applyGlossaryCorrections(raw, glossaryTerms);
+          await db.update(t.conversations).set({ transcriptRaw: corrected }).where(eq(t.conversations.id, callId));
+          return corrected;
+        });
 
   // Step 2: translate → English (skip if already translated).
   const transcriptTranslated = await step.run("translate", async () => {

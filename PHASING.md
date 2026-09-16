@@ -36,9 +36,24 @@ Intent, Objections, BANT, Data Capture, Path to Conversion), Profile/Tasks/Notes
 sub-tabs, and the Setup section (Team, Rubric editor, Glossary, Qualification rules,
 Leadsquared config, generic integration-connector template pages, custom fields).
 
+## LeadSquared ingestion + Sarvam batch transcription
+
+Built on `feature/leadsquared-sarvam-ingestion`: a scheduled `leadsquared-sync` Inngest cron
+discovers new LeadSquared call activities per org and creates `conversations` rows
+automatically (closing the "no automatic path from CRM recording to scored transcript" gap);
+`lib/integrations/storage.ts` re-hosts those recordings into Supabase Storage before anything
+depends on their (possibly short-lived) LeadSquared URL; transcription for CRM-sourced calls
+now runs through Sarvam's async Batch STT API instead of Deepgram, orchestrated as durable
+Inngest steps that survive a restart mid-poll. See `SETUP.md`'s Audio storage/Speech-to-text/
+CRM sections for the env vars each piece needs, and this PR's description for the open
+product decisions it deliberately didn't resolve (long-term audio retention; the exact
+telephony-vendor `conversationSourceEnum` tag once Kalvium's real LeadSquared account is
+known).
+
 ## Explicitly not done
 
-- Real audio file upload/storage (accepts an already-hosted URL only — see SETUP.md).
+- Real audio file upload/storage for the **manual/CSV** upload flow — still accepts an
+  already-hosted URL only (see SETUP.md). Only CRM-sourced recordings are auto-rehosted.
 - Sign-in/sign-up pages for Clerk (routes aren't reachable without Clerk configured, so
   they'd be unreviewable dead code in this environment — see SETUP.md for adding them).
 - Sentry/PostHog SDK wiring (no accounts to verify against here).

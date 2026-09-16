@@ -86,6 +86,12 @@ export const riskLevelEnum = pgEnum("risk_level", [
 
 export const taskStatusEnum = pgEnum("task_status", ["open", "done"]);
 
+// Sarvam Batch STT job lifecycle (R3/R4) — kept coarse (no "queued"/"uploading"/
+// "started" sub-states) since the submit+upload+start sequence happens inside a
+// single "sarvam-submit" step; only the states that matter for resumability and
+// for gating the storage cleanup sweep are tracked here.
+export const sarvamJobStatusEnum = pgEnum("sarvam_job_status", ["running", "completed", "failed"]);
+
 /* -------------------------------------------------------------------------
  * Organizations & Users
  * ---------------------------------------------------------------------- */
@@ -100,6 +106,9 @@ export const organizations = pgTable("organizations", {
     hostUrl?: string;
     enabled: boolean;
   }>(),
+  // Watermark for the leadsquared-sync cron (R1) — activities modified after this
+  // are fetched on the next run; null means "never synced, look back one day".
+  leadsquaredLastSyncedAt: timestamp("leadsquared_last_synced_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -169,6 +178,15 @@ export const conversations = pgTable("conversations", {
   qualityScore: real("quality_score"), // 0-100, derived from call_verdicts.overallScore
   errorMessage: text("error_message"),
   llmPromptVersion: text("llm_prompt_version"),
+  // CRM-sync idempotency key (R1) — e.g. the LeadSquared ActivityId. Only set for
+  // rows created by an automated CRM sync; null for manual/CSV uploads. A row
+  // already existing for (orgId, externalCallId) means "already ingested, skip".
+  externalCallId: text("external_call_id"),
+  // Sarvam Batch STT job persistence (R3/R4) — durable so an in-flight job
+  // survives a restart/redeploy instead of being blindly resubmitted.
+  sarvamJobId: text("sarvam_job_id"),
+  sarvamJobStatus: sarvamJobStatusEnum("sarvam_job_status"),
+  sarvamRetryCount: integer("sarvam_retry_count").default(0).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

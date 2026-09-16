@@ -71,3 +71,41 @@ type="date">` pairs instead, to keep scope real.
 PRD §11.3 flags "Not Converted" vs. "Not-Converted" and inconsistent calendar week-start as
 likely bugs in the source product. This build uses one canonical `lead_stage` enum
 (`not_converted`) rather than reproducing the duplicate-value bug.
+
+## LeadSquared ingestion + Sarvam batch transcription (PRD: leadsquared-sarvam-ingestion)
+
+- **Job persistence (R4):** chose option (a) from the PRD — `sarvamJobId`/`sarvamJobStatus`/
+  `sarvamRetryCount` columns directly on `conversations`, not a separate `sarvam_jobs` table.
+  Matches the PRD's own recommendation at this scale (one job per conversation, no
+  multi-segment splitting for one-on-one counselling calls).
+- **Provider selection (R5):** least-code rule per the PRD's own suggestion — calls with
+  `source = 'crm_recordings'` (the LeadSquared sync) route to Sarvam, everything else keeps
+  using Deepgram. No new per-org setting; revisit once real usage data shows which languages
+  actually need Sarvam.
+- **`conversationSourceEnum` value for LeadSquared calls (open question, PRD § 9.2):** used
+  the existing generic `crm_recordings` value rather than a specific telephony vendor
+  (`exotel`/`ozonetel`/etc.), since which vendor Kalvium's LeadSquared instance is actually
+  wired to is unknown without asking or running Phase 0 discovery against the real account.
+  **Not silently decided** — confirm and swap if a vendor-specific tag turns out to be more
+  useful downstream (e.g. for per-vendor audio-format quirks).
+- **Sync watermark:** a plain `leadsquaredLastSyncedAt` timestamp column on `organizations`,
+  not a dedicated CRM-sync-metadata table — simplest option that satisfies R1, per the PRD's
+  own "your call, keep it simple."
+- **Idempotency key (R1 § 5.4):** added `conversations.externalCallId` (the LeadSquared
+  ActivityId) rather than reusing an existing column — nothing else on the row was suitable,
+  and R1 explicitly needs a dedup key before inserting.
+- **Storage retention (open question, PRD § 9.1):** deliberately **not decided**. The
+  storage-cleanup cron exists but is disabled by default (`CLEANUP_REHOSTED_RECORDINGS`
+  unset) until it's confirmed whether Kalvium needs re-hosted audio kept long-term for
+  compliance/QA review.
+- **Sarvam API shape (open question, PRD § 9.3):** implemented assuming the batch endpoint
+  requires uploaded file bytes (matching the Python SDK's `upload_files()` pattern the PRD
+  points at), since this environment's egress proxy blocks `docs.sarvam.ai` and the exact
+  request/response fields could not be verified end-to-end against a live account. Flagged
+  in code comments in `lib/integrations/sarvam.ts` — confirm against the real API before
+  relying on this in production.
+- **ffmpeg (PRD R2 deployment note):** chose a Render build-time apt package over an npm
+  dependency like `ffmpeg-static`, to avoid bundling a large binary into the deploy
+  artifact; this repo still has no Dockerfile, so this needs to actually be added to the
+  Render service config, not just assumed. Falls back to uploading unnormalized audio (with
+  a warning) if `ffmpeg` isn't found, rather than failing the whole pipeline.

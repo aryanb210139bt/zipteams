@@ -24,6 +24,29 @@ export async function findOrCreateLead(orgId: string, input: { name: string; ema
   return lead;
 }
 
+/**
+ * LeadSquared-specific variant of `findOrCreateLead` (R1): matches on
+ * `crmRecordUrl` (the LeadSquared ProspectId) instead of email, since a call
+ * activity synced from LeadSquared may not carry a lead email at all. Reuses
+ * the same field `pushCallScoreToLeadsquared` already sends outbound as
+ * `leadsquaredLeadId` — one field for both directions, per the PRD.
+ */
+export async function findOrCreateLeadByCrmRecordUrl(orgId: string, crmRecordUrl: string, name?: string | null) {
+  const existing = await db.query.leads.findFirst({ where: and(eq(t.leads.orgId, orgId), eq(t.leads.crmRecordUrl, crmRecordUrl)) });
+  if (existing) return existing;
+  const [lead] = await db
+    .insert(t.leads)
+    .values({
+      orgId,
+      name: name || `LeadSquared prospect ${crmRecordUrl}`,
+      crmRecordUrl,
+      leadStage: "in_progress_calls",
+      leadStageCategory: "in_pipeline",
+    })
+    .returning();
+  return lead;
+}
+
 export type NewConversationInput = {
   orgId: string;
   leadId: string;
@@ -33,6 +56,8 @@ export type NewConversationInput = {
   durationSeconds: number;
   callDate?: Date;
   transcriptRaw?: (typeof t.conversations.$inferInsert)["transcriptRaw"];
+  /** CRM-sync idempotency key (R1) — e.g. the LeadSquared ActivityId. Omit for manual/CSV uploads. */
+  externalCallId?: string | null;
 };
 
 export async function createUploadedConversation(input: NewConversationInput) {
@@ -49,6 +74,7 @@ export async function createUploadedConversation(input: NewConversationInput) {
       status: "uploaded",
       transcriptRaw: input.transcriptRaw,
       transcriptTranslated: input.transcriptRaw, // pipeline's translate step will overwrite if a real translator is configured
+      externalCallId: input.externalCallId ?? null,
     })
     .returning();
   return convo;
