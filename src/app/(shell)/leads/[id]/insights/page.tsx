@@ -5,8 +5,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { getLeadDetail, getConversationDetail } from "@/lib/db/queries";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-
-const BANT_KEYS = ["budget", "authority", "needs", "timeline"];
+import { BANT_KEYS } from "@/lib/db/constants";
 
 export default async function LeadInsightsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,8 +14,8 @@ export default async function LeadInsightsPage({ params }: { params: Promise<{ i
   if (!detail || detail.lead.orgId !== user.orgId) notFound();
 
   const latestCall = detail.latestScoredCallId ? await getConversationDetail(detail.latestScoredCallId) : null;
-  const passes = latestCall?.scores.filter((s) => s.score.verdict === "pass") ?? [];
-  const fails = latestCall?.scores.filter((s) => s.score.verdict === "fail") ?? [];
+  const highIntentFactors = latestCall?.conversation.highIntentFactors ?? [];
+  const lowIntentFactors = latestCall?.conversation.lowIntentFactors ?? [];
   const bant = detail.dataCapture.filter((d) => BANT_KEYS.includes(d.field.key));
   const customCapture = detail.dataCapture.filter((d) => !BANT_KEYS.includes(d.field.key));
 
@@ -34,22 +33,32 @@ export default async function LeadInsightsPage({ params }: { params: Promise<{ i
               {detail.lead.leadStage === "converted" ? "Converted" : latestCall?.conversation.intent ?? "Not scored yet"}{" "}
               {detail.lead.intentScore != null && `${detail.lead.intentScore}/100`}
             </Badge>
-            {passes.length > 0 && (
+            {latestCall?.conversation.intentTrend && latestCall.conversation.intentTrendRationale && (
+              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                {latestCall.conversation.intentTrend === "up" ? (
+                  <TrendingUp className="mt-0.5 size-3.5 shrink-0 text-status-positive" />
+                ) : latestCall.conversation.intentTrend === "down" ? (
+                  <TrendingDown className="mt-0.5 size-3.5 shrink-0 text-status-negative" />
+                ) : null}
+                {latestCall.conversation.intentTrendRationale}
+              </p>
+            )}
+            {highIntentFactors.length > 0 && (
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium text-muted-foreground">High Intent factors</span>
-                {passes.slice(0, 4).map((p) => (
-                  <span key={p.parameter.id} className="flex items-start gap-1.5 text-sm">
-                    <TrendingUp className="mt-0.5 size-3.5 shrink-0 text-status-positive" /> {p.parameter.text}
+                {highIntentFactors.slice(0, 4).map((factor, i) => (
+                  <span key={i} className="flex items-start gap-1.5 text-sm">
+                    <TrendingUp className="mt-0.5 size-3.5 shrink-0 text-status-positive" /> {factor}
                   </span>
                 ))}
               </div>
             )}
-            {fails.length > 0 && (
+            {lowIntentFactors.length > 0 && (
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium text-muted-foreground">Low Intent factors</span>
-                {fails.slice(0, 4).map((f) => (
-                  <span key={f.parameter.id} className="flex items-start gap-1.5 text-sm">
-                    <TrendingDown className="mt-0.5 size-3.5 shrink-0 text-status-negative" /> Not observed: {f.parameter.text}
+                {lowIntentFactors.slice(0, 4).map((factor, i) => (
+                  <span key={i} className="flex items-start gap-1.5 text-sm">
+                    <TrendingDown className="mt-0.5 size-3.5 shrink-0 text-status-negative" /> {factor}
                   </span>
                 ))}
               </div>
@@ -134,6 +143,7 @@ export default async function LeadInsightsPage({ params }: { params: Promise<{ i
                     <span className="text-sm font-semibold">
                       {i + 1}. {task.title}
                     </span>
+                    {task.description && <p className="text-xs text-muted-foreground">{task.description}</p>}
                     {task.sayScript && <p className="text-xs italic text-muted-foreground">&ldquo;Say: {task.sayScript}&rdquo;</p>}
                     {task.rationale && (
                       <p className="flex items-start gap-1 text-xs text-status-positive">

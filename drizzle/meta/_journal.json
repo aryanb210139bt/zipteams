@@ -8,6 +8,13 @@
       "when": 1789282895473,
       "tag": "0000_petite_zeigeist",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789564425261,
+      "tag": "0001_conscious_luminals",
+      "breakpoints": true
     }
   ]
 }

@@ -108,16 +108,41 @@ export default async function LeadConversationsPage({ params, searchParams }: { 
                 <TabsTrigger value="quality">Quality</TabsTrigger>
               </TabsList>
             </div>
-            <TabsContent value="summary" className="flex flex-col gap-3 p-4">
+            <TabsContent value="summary" className="flex flex-col gap-4 p-4">
               {selected.verdict ? (
                 <>
-                  <Badge variant={selected.verdict.riskLevel === "likely_genuine" ? "positive" : selected.verdict.riskLevel === "needs_review" ? "moderate" : "negative"} className="w-fit">
-                    {selected.verdict.riskLevel.replace(/_/g, " ")}
-                  </Badge>
-                  <div>
-                    <span className="text-xs font-medium text-muted-foreground">Conversation Summary</span>
-                    <p className="text-sm">{selected.verdict.summary}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={selected.verdict.riskLevel === "likely_genuine" ? "positive" : selected.verdict.riskLevel === "needs_review" ? "moderate" : "negative"} className="w-fit">
+                      {selected.verdict.riskLevel.replace(/_/g, " ")}
+                    </Badge>
+                    {selected.conversation.intentScore != null && (
+                      <Badge variant="outline" className="w-fit">
+                        Intent: {selected.conversation.intent ?? "—"} ({selected.conversation.intentScore}/100)
+                      </Badge>
+                    )}
                   </div>
+                  {[
+                    { label: "Call Summary", bullets: selected.verdict.callSummary },
+                    { label: "Key Points", bullets: selected.verdict.keyPoints },
+                    { label: "Main Takeaways", bullets: selected.verdict.mainTakeaways },
+                  ].map(({ label, bullets }) =>
+                    bullets?.length ? (
+                      <div key={label}>
+                        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+                        <ul className="mt-1 list-disc space-y-1 pl-4 text-sm">
+                          {bullets.map((bullet, i) => (
+                            <li key={i}>{bullet}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null
+                  )}
+                  {!selected.verdict.callSummary?.length && (
+                    <div>
+                      <span className="text-xs font-medium text-muted-foreground">Conversation Summary</span>
+                      <p className="text-sm">{selected.verdict.summary}</p>
+                    </div>
+                  )}
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">This call hasn&apos;t been scored yet — status: {STATUS_LABEL[selected.conversation.status]}.</p>

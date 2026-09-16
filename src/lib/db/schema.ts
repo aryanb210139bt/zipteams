@@ -86,6 +86,8 @@ export const riskLevelEnum = pgEnum("risk_level", [
 
 export const taskStatusEnum = pgEnum("task_status", ["open", "done"]);
 
+export const intentTrendEnum = pgEnum("intent_trend", ["up", "down", "flat"]);
+
 /* -------------------------------------------------------------------------
  * Organizations & Users
  * ---------------------------------------------------------------------- */
@@ -167,6 +169,13 @@ export const conversations = pgTable("conversations", {
   talkToListenRatio: real("talk_to_listen_ratio"), // associate speaking share, 0-1
   intent: intentEnum("intent"),
   qualityScore: real("quality_score"), // 0-100, derived from call_verdicts.overallScore
+  // Real AI Evaluation spec §3 — a distinct signal from qualityScore: buying intent,
+  // not audit-rubric compliance. Populated by the intent section of the scoring call.
+  intentScore: integer("intent_score"), // 0-100
+  highIntentFactors: jsonb("high_intent_factors").$type<string[]>(),
+  lowIntentFactors: jsonb("low_intent_factors").$type<string[]>(),
+  intentTrend: intentTrendEnum("intent_trend"), // computed in code vs. the lead's previous call, null if first call
+  intentTrendRationale: text("intent_trend_rationale"),
   errorMessage: text("error_message"),
   llmPromptVersion: text("llm_prompt_version"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -213,6 +222,8 @@ export const callScores = pgTable("call_scores", {
   supportingQuote: text("supporting_quote"),
   confidence: real("confidence"), // 0-1
   aiRationale: text("ai_rationale"),
+  // Real AI Evaluation spec §2.2 — lets the per-parameter play button seek the audio.
+  evidenceTimestampSeconds: integer("evidence_timestamp_seconds"),
   overriddenByUserId: uuid("overridden_by_user_id").references(() => users.id, { onDelete: "set null" }),
   overriddenAt: timestamp("overridden_at", { withTimezone: true }),
   llmPromptVersion: text("llm_prompt_version"),
@@ -224,12 +235,26 @@ export const callVerdicts = pgTable("call_verdicts", {
   callId: uuid("call_id").notNull().references(() => conversations.id, { onDelete: "cascade" }).unique(),
   overallScore: real("overall_score").notNull(), // 0-100
   riskLevel: riskLevelEnum("risk_level").notNull(),
+  // Real AI Evaluation spec §9 — numeric companion to riskLevel, and the derived
+  // Flagged for Review gate (true when riskLevel is needs_review or high_fabrication_risk).
+  fabricationRiskScore: integer("fabrication_risk_score"), // 0-100
+  flaggedForReview: boolean("flagged_for_review").default(false).notNull(),
   fabricationRationale: text("fabrication_rationale"),
   summary: text("summary"),
+  // Real AI Evaluation spec §7 — three distinct bulleted sections, increasing in
+  // abstraction (narrative recap → granular facts → strategic conclusions).
+  callSummary: jsonb("call_summary").$type<string[]>(),
+  keyPoints: jsonb("key_points").$type<string[]>(),
+  mainTakeaways: jsonb("main_takeaways").$type<string[]>(),
   overallComment: text("overall_comment"),
   reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id, { onDelete: "set null" }),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   llmPromptVersion: text("llm_prompt_version"),
+  // Real AI Evaluation spec §10 meta block — which model produced this, and a hash of
+  // the rubric_categories/parameters snapshot fetched at eval time, so a quality-score
+  // trend months later can be told apart from a rubric/prompt edit.
+  model: text("model"),
+  rubricSnapshotHash: text("rubric_snapshot_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -298,6 +323,8 @@ export const dataCaptureValues = pgTable("data_capture_values", {
   fieldId: uuid("field_id").notNull().references(() => dataCaptureFields.id, { onDelete: "cascade" }),
   value: text("value"),
   sourceTimestampSeconds: integer("source_timestamp_seconds"),
+  // Real AI Evaluation spec §6 — short supporting quote, distinct from the timestamp.
+  evidenceQuote: text("evidence_quote"),
   editedByUserId: uuid("edited_by_user_id").references(() => users.id, { onDelete: "set null" }),
 });
 

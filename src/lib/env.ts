@@ -18,6 +18,15 @@ export const env = {
   leadsquaredHost: process.env.LEADSQUARED_HOST ?? "https://api.leadsquared.com",
   resendApiKey: process.env.RESEND_API_KEY,
   appUrl: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+  /**
+   * Real AI Evaluation rollout gate — deliberately separate from `hasAnthropic`.
+   * Holding a valid ANTHROPIC_API_KEY is not enough on its own to switch the
+   * live pipeline over to real scoring; this must also be explicitly set to
+   * "true", so a single real test call can be run (e.g. via a one-off script)
+   * before flipping every future upload over. Unlike the credential-presence
+   * `hasX` flags below, this is a plain on/off toggle.
+   */
+  realScoringEnabled: process.env.REAL_SCORING_ENABLED === "true",
 } as const;
 
 export const hasClerk = Boolean(env.clerkPublishableKey && env.clerkSecretKey);
@@ -26,3 +35,5 @@ export const hasGoogleTranslate = Boolean(env.googleTranslateApiKey);
 export const hasAnthropic = Boolean(env.anthropicApiKey);
 export const hasResend = Boolean(env.resendApiKey);
 export const hasRealDatabase = Boolean(env.databaseUrl);
+/** Gate actually consulted by lib/integrations/claude.ts to choose real Claude scoring vs. the deterministic mock. */
+export const useRealScoring = hasAnthropic && env.realScoringEnabled;

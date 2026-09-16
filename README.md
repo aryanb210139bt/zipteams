@@ -55,7 +55,7 @@ documents it was built from.
 | Auth | Clerk (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY`) | Seeded admin user, no sign-in |
 | Transcription | Deepgram (`DEEPGRAM_API_KEY`), nova-2 + diarization + glossary word-boost | Deterministic canned transcript |
 | Translation | Google Cloud Translation (`GOOGLE_TRANSLATE_API_KEY`) | Passthrough (assumes English) |
-| Scoring | Anthropic Claude (`ANTHROPIC_API_KEY`) | Deterministic heuristic scorer (`[mock]`-prefixed rationale) |
+| Scoring | Anthropic Claude (`ANTHROPIC_API_KEY` **and** `REAL_SCORING_ENABLED=true` — see SETUP.md) | Deterministic heuristic scorer (`[mock]`-prefixed rationale) |
 | CRM push | Leadsquared (org-level config in Setup, or `LEADSQUARED_*` env) | Console log of what would be pushed |
 | Alerts | Resend (`RESEND_API_KEY`) | Console log of the email that would be sent |
 | Async jobs | Inngest (`INNGEST_EVENT_KEY`/`INNGEST_SIGNING_KEY`, or `npx inngest-cli dev`) | Pipeline runs inline, synchronously, in the request that triggered it |

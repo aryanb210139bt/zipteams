@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { canReviewCalls, type CurrentUser } from "@/lib/roles";
+import { formatClock } from "@/lib/utils";
 import type { getConversationDetail } from "@/lib/db/queries";
 
 type Scores = Awaited<ReturnType<typeof getConversationDetail>>;
@@ -37,6 +38,7 @@ export function QualityScorecard({ callId, data, user }: { callId: string; data:
         </h3>
         <Badge variant={data.verdict?.riskLevel === "likely_genuine" ? "positive" : data.verdict?.riskLevel === "needs_review" ? "moderate" : "negative"}>
           {data.verdict?.riskLevel?.replace(/_/g, " ") ?? "unscored"}
+          {data.verdict?.fabricationRiskScore != null && ` (${data.verdict.fabricationRiskScore}/100)`}
         </Badge>
       </div>
       {data.verdict?.fabricationRationale && <p className="text-sm text-muted-foreground">{data.verdict.fabricationRationale}</p>}
@@ -49,10 +51,26 @@ export function QualityScorecard({ callId, data, user }: { callId: string; data:
                 <span className="text-xs text-muted-foreground">{category.name}</span>
                 <p className="text-sm font-medium">{parameter.text}</p>
               </div>
-              <Badge variant={VERDICT_VARIANT[score.verdict]}>{VERDICT_LABEL[score.verdict]}</Badge>
+              <div className="flex items-center gap-1.5">
+                {score.confidence != null && score.confidence < 0.6 && (
+                  <Badge variant="moderate" title="Low-confidence score — worth a QA look">
+                    {Math.round(score.confidence * 100)}% confidence
+                  </Badge>
+                )}
+                <Badge variant={VERDICT_VARIANT[score.verdict]}>{VERDICT_LABEL[score.verdict]}</Badge>
+              </div>
             </div>
             {score.aiRationale && <p className="text-xs text-muted-foreground">{score.aiRationale}</p>}
-            {score.supportingQuote && <p className="rounded-md bg-muted px-2 py-1 text-xs italic">&ldquo;{score.supportingQuote}&rdquo;</p>}
+            {score.supportingQuote && (
+              <p className="rounded-md bg-muted px-2 py-1 text-xs italic">
+                &ldquo;{score.supportingQuote}&rdquo;
+                {score.evidenceTimestampSeconds != null && (
+                  <span className="ml-1 not-italic text-muted-foreground">
+                    (at {formatClock(score.evidenceTimestampSeconds)})
+                  </span>
+                )}
+              </p>
+            )}
             {canOverride && (
               <div className="flex flex-wrap gap-1.5">
                 {MARK_OPTIONS.filter((opt) => opt !== "partial" || parameter.supportsPartialCredit).map((opt) => (

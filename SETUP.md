@@ -63,9 +63,16 @@ to English.
 
 ## LLM scoring (Anthropic Claude)
 
-Set `ANTHROPIC_API_KEY`. Uses `claude-sonnet-5` by default (override with `CLAUDE_MODEL`).
-The prompt + tool schema live in `lib/integrations/claude.ts` — bump `PROMPT_VERSION` there
-whenever you change either, since every score/verdict row records it.
+Set `ANTHROPIC_API_KEY`, **and** `REAL_SCORING_ENABLED=true` — the two are deliberately
+separate gates (`lib/env.ts`'s `useRealScoring`), so you can hold a valid key and still run
+the whole pipeline against the deterministic mock until you've validated real scoring
+against at least one real call. Uses `claude-sonnet-5` by default (override with
+`CLAUDE_MODEL`). The rubric-driven prompt + tool schema live in
+`lib/ai-evaluation/build-prompt.ts` (fetches the org's rubric/concern-taxonomy/data-capture
+fields fresh from the DB on every call — nothing is hardcoded); the API call itself is in
+`lib/integrations/claude.ts` — bump `PROMPT_VERSION` there whenever either changes, since
+every verdict row records it alongside a hash of the rubric it was scored against
+(`rubricSnapshotHash`), so a quality-score trend can be told apart from a rubric/prompt edit.
 
 ## Audio storage
 

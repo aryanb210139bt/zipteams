@@ -1,13 +1,20 @@
-import { eq } from "drizzle-orm";
+import { eq, and, ne, desc, isNotNull } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import * as t from "@/lib/db/schema";
 import { transcribeAudio, applyGlossaryCorrections } from "@/lib/integrations/deepgram";
 import { translateTranscript } from "@/lib/integrations/translate";
-import { scoreCall, PROMPT_VERSION } from "@/lib/integrations/claude";
+import { scoreCall, CLAUDE_MODEL, PROMPT_VERSION } from "@/lib/integrations/claude";
 import { pushCallScoreToLeadsquared } from "@/lib/integrations/leadsquared";
 import { sendFlaggedCallAlert } from "@/lib/integrations/resend";
 import { env } from "@/lib/env";
+import { BANT_KEYS } from "@/lib/db/constants";
+import { computeOverallScore } from "@/lib/scoring/overall-score";
+import { hashRubricSnapshot } from "@/lib/scoring/rubric-snapshot";
+
+function intentLabelFromScore(score: number): "high" | "moderate" | "low" {
+  return score >= 70 ? "high" : score >= 40 ? "moderate" : "low";
+}
 
 /** Minimal shape both Inngest's real `step` and the inline fallback runner satisfy. */
 export type StepRunner = {
@@ -88,9 +95,13 @@ export async function executeCallPipeline(callId: string, step: StepRunner) {
     const categoryById = new Map(categories.map((c) => [c.id, c]));
     const orgParameters = parameters.filter((p) => categoryById.has(p.categoryId));
 
-    const [concernCategories, dataCaptureFields] = await Promise.all([
+    const [concernCategories, dataCaptureFields, previousConvo] = await Promise.all([
       db.select().from(t.concernCategories).where(eq(t.concernCategories.orgId, loaded.org.id)),
       db.select().from(t.dataCaptureFields).where(eq(t.dataCaptureFields.orgId, loaded.org.id)),
+      db.query.conversations.findFirst({
+        where: and(eq(t.conversations.leadId, loaded.lead.id), ne(t.conversations.id, callId), isNotNull(t.conversations.intentScore)),
+        orderBy: desc(t.conversations.callDate),
+      }),
     ]);
 
     const result = await scoreCall({
@@ -106,15 +117,32 @@ export async function executeCallPipeline(callId: string, step: StepRunner) {
       })),
       concernCategoryNames: concernCategories.map((c) => c.name),
       dataCaptureFieldKeys: dataCaptureFields.map((f) => f.key),
+      previousIntentScore: previousConvo?.intentScore ?? null,
+      previousCallDate: previousConvo?.callDate ?? null,
     });
 
-    return { alreadyScored: false as const, result, categories, orgParameters, concernCategories, dataCaptureFields };
+    const rubricSnapshotHash = hashRubricSnapshot(
+      categories.map((c) => ({ id: c.id, weight: c.weight })),
+      orgParameters.map((p) => ({ id: p.id, categoryId: p.categoryId, text: p.text, weight: p.weight }))
+    );
+
+    return {
+      alreadyScored: false as const,
+      result,
+      categories,
+      orgParameters,
+      concernCategories,
+      dataCaptureFields,
+      previousIntentScore: previousConvo?.intentScore ?? null,
+      rubricSnapshotHash,
+    };
   });
 
-  // Step 4: persist scores/verdict/objections/data-capture (only the first time scoring actually happened).
+  // Step 4: persist scores/verdict/intent/BANT/objections/data-capture/next-steps
+  // (only the first time scoring actually happened).
   if (!scoring.alreadyScored) {
     await step.run("persist-results", async () => {
-      const { result, categories, orgParameters, concernCategories, dataCaptureFields } = scoring;
+      const { result, categories, orgParameters, concernCategories, dataCaptureFields, previousIntentScore, rubricSnapshotHash } = scoring;
       const paramById = new Map(orgParameters.map((p) => [p.id, p]));
 
       if (result.parameterScores.length) {
@@ -128,44 +156,63 @@ export async function executeCallPipeline(callId: string, step: StepRunner) {
               supportingQuote: s.supportingQuote,
               confidence: s.confidence,
               aiRationale: s.rationale,
+              evidenceTimestampSeconds: s.evidenceTimestampSeconds,
               llmPromptVersion: PROMPT_VERSION,
             }))
         );
       }
 
-      const weightByCategoryId: Record<string, number> = {};
-      for (const cat of categories) weightByCategoryId[cat.id] = cat.weight;
-      let weightedSum = 0;
-      let weightTotal = 0;
-      const byCategory = new Map<string, { sum: number; n: number }>();
-      for (const s of result.parameterScores) {
-        const param = paramById.get(s.parameterId);
-        if (!param || s.verdict === "na") continue;
-        const val = s.verdict === "pass" ? 1 : s.verdict === "partial" ? 0.5 : 0;
-        const agg = byCategory.get(param.categoryId) ?? { sum: 0, n: 0 };
-        agg.sum += val;
-        agg.n += 1;
-        byCategory.set(param.categoryId, agg);
-      }
-      for (const [categoryId, agg] of byCategory) {
-        const weight = weightByCategoryId[categoryId] ?? 0;
-        if (weight === 0 || !agg.n) continue;
-        weightedSum += (agg.sum / agg.n) * weight;
-        weightTotal += weight;
-      }
-      const overallScore = weightTotal ? Math.round((weightedSum / weightTotal) * 100) : 0;
+      // Real AI Evaluation spec §2.3 — the ONE shared formula (lib/scoring/overall-score.ts),
+      // also used by any historical Dashboard aggregate so the two can't drift apart.
+      const { percent: overallScore } = computeOverallScore(
+        categories.map((c) => ({ id: c.id, weight: c.weight })),
+        orgParameters.map((p) => ({ id: p.id, categoryId: p.categoryId })),
+        result.parameterScores.filter((s) => paramById.has(s.parameterId))
+      );
+
+      const flaggedForReview = result.authenticity.riskLevel === "high_fabrication_risk" || result.authenticity.riskLevel === "needs_review";
 
       await db.insert(t.callVerdicts).values({
         callId,
         overallScore,
         riskLevel: result.authenticity.riskLevel,
+        fabricationRiskScore: result.authenticity.fabricationRiskScore,
+        flaggedForReview,
         fabricationRationale: result.authenticity.rationale,
-        summary: result.summary,
+        summary: result.summary.callSummary.join(" "),
+        callSummary: result.summary.callSummary,
+        keyPoints: result.summary.keyPoints,
+        mainTakeaways: result.summary.mainTakeaways,
         llmPromptVersion: PROMPT_VERSION,
+        model: CLAUDE_MODEL,
+        rubricSnapshotHash,
       });
 
-      const intent = overallScore >= 75 ? "high" : overallScore >= 55 ? "moderate" : overallScore >= 35 ? "neutral" : overallScore >= 15 ? "low" : "not_qualified";
-      await db.update(t.conversations).set({ status: "scored", qualityScore: overallScore, intent, llmPromptVersion: PROMPT_VERSION }).where(eq(t.conversations.id, callId));
+      // Intent (spec §3) is a distinct signal from qualityScore/overallScore — never derive
+      // one from the other. intentLabel and intentTrend are both derived here in code (not
+      // asked of the model) so the boundary stays consistent and adjustable without re-prompting.
+      const intentScore = result.intent.intentScore;
+      const intentLabel = intentLabelFromScore(intentScore);
+      const intentTrend = previousIntentScore == null ? null : intentScore > previousIntentScore ? "up" : intentScore < previousIntentScore ? "down" : "flat";
+
+      await db
+        .update(t.conversations)
+        .set({
+          status: "scored",
+          qualityScore: overallScore,
+          intent: intentLabel,
+          intentScore,
+          highIntentFactors: result.intent.highIntentFactors,
+          lowIntentFactors: result.intent.lowIntentFactors,
+          intentTrend,
+          intentTrendRationale: previousIntentScore == null ? null : result.intent.intentTrendRationale,
+          llmPromptVersion: PROMPT_VERSION,
+        })
+        .where(eq(t.conversations.id, callId));
+
+      // Lead-level Intent Score (spec §3) — the most recent call's score, NOT an average,
+      // so the "intent reduced from last call" callout reflects the latest call's state.
+      await db.update(t.leads).set({ intentScore, updatedAt: new Date() }).where(eq(t.leads.id, loaded.lead.id));
 
       if (result.objections.length) {
         const byName = new Map(concernCategories.map((c) => [c.name, c]));
@@ -175,37 +222,53 @@ export async function executeCallPipeline(callId: string, step: StepRunner) {
             .map((o) => ({
               callId,
               concernCategoryId: byName.get(o.concernCategory)!.id,
-              statement: o.statement,
-              handling: o.handling,
+              statement: o.objectionText,
+              handling: o.howHandled,
               customerSatisfied: o.customerSatisfied,
             }))
         );
       }
 
-      if (result.dataCapture.length) {
-        const byKey = new Map(dataCaptureFields.map((f) => [f.key, f]));
-        await db.insert(t.dataCaptureValues).values(
-          result.dataCapture
-            .filter((d) => byKey.has(d.fieldKey))
-            .map((d) => ({
-              callId,
-              fieldId: byKey.get(d.fieldKey)!.id,
-              value: d.value,
-              sourceTimestampSeconds: d.sourceTimestampSeconds,
-            }))
-        );
+      // BANT (spec §4) is a fixed sales-methodology concept, not org-configurable — but it's
+      // stored through the same generic data_capture_values mechanism the UI already reads
+      // (filtered by BANT_KEYS). Always insert all 4, null included: that's a legitimate value
+      // the frontend already renders as an empty box, not a fabricated placeholder sentence.
+      const dataCaptureFieldByKey = new Map(dataCaptureFields.map((f) => [f.key, f]));
+      const bantRows = BANT_KEYS.filter((key) => dataCaptureFieldByKey.has(key)).map((key) => ({
+        callId,
+        fieldId: dataCaptureFieldByKey.get(key)!.id,
+        value: result.bant[key as keyof typeof result.bant],
+        sourceTimestampSeconds: null,
+        evidenceQuote: null,
+      }));
+
+      // General data capture (spec §6) — org-configurable fields, only when the call actually
+      // touched on them (this list is naturally sparse, unlike BANT's "always attempt" rule).
+      const dataCaptureRows = result.dataCapture
+        .filter((d) => dataCaptureFieldByKey.has(d.fieldKey) && !BANT_KEYS.includes(d.fieldKey))
+        .map((d) => ({
+          callId,
+          fieldId: dataCaptureFieldByKey.get(d.fieldKey)!.id,
+          value: d.value,
+          sourceTimestampSeconds: null,
+          evidenceQuote: d.evidenceQuote,
+        }));
+
+      if (bantRows.length || dataCaptureRows.length) {
+        await db.insert(t.dataCaptureValues).values([...bantRows, ...dataCaptureRows]);
       }
 
-      if (result.actionItems.length) {
+      if (result.nextSteps.length) {
         await db.insert(t.tasks).values(
-          result.actionItems.map((a) => ({
+          result.nextSteps.map((ns) => ({
             orgId: loaded.org.id,
             leadId: loaded.lead.id,
             callId,
-            title: a.title,
-            sayScript: a.sayScript,
-            rationale: a.rationale,
-            dueDate: new Date(Date.now() + a.dueInDays * 24 * 60 * 60 * 1000),
+            title: ns.actionLabel,
+            description: ns.explanation,
+            sayScript: ns.suggestedScript,
+            rationale: ns.scriptRationale,
+            dueDate: new Date(Date.now() + ns.dueInDays * 24 * 60 * 60 * 1000),
             status: "open" as const,
           }))
         );
